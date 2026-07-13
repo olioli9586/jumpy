@@ -1,0 +1,14 @@
+{
+  "name": "Jumpy",
+  "short_name": "Jumpy",
+  "description": "用手機相機幫你數跳繩的計數器。",
+  "lang": "zh-Hant",
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0e13",
+  "theme_color": "#0b0e13",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

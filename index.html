@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#0b0e13" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="description" content="Jumpy — 用手機相機幫你數跳繩的計數器。" />
+  <title>Jumpy — 跳繩計數器</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Camera layer -->
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="overlay"></canvas>
+  <div id="scrim"></div>
+
+  <!-- Start screen -->
+  <section id="screen-start" class="screen">
+    <header class="brand">
+      <h1 class="logo">JUMPY</h1>
+      <p class="tag">手機立好，退後，開跳。</p>
+    </header>
+    <div class="start-actions">
+      <button id="btn-enable" class="btn-primary">開啟相機</button>
+      <p class="hint">一切都在你的手機上運行——影像不會上傳。<br />距離 2–3 公尺、全身入鏡效果最佳。</p>
+      <button id="btn-stats-start" class="btn-text">查看統計</button>
+    </div>
+    <p id="start-error" class="error hidden"></p>
+  </section>
+
+  <!-- Ready screen (camera on, waiting to go) -->
+  <section id="screen-ready" class="screen hidden">
+    <div class="topbar">
+      <div id="pill" class="pill">載入追蹤器中…</div>
+      <button id="btn-settings" class="btn-icon" aria-label="設定">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+      </button>
+    </div>
+    <div class="ready-center">
+      <button id="btn-rec" class="rec-toggle" aria-pressed="false"><span class="rec-dot"></span><span class="rec-label">錄影：關</span></button>
+      <button id="btn-go" class="btn-go" disabled>開始</button>
+      <p class="hint">按下後倒數 10 秒開始計數。</p>
+    </div>
+  </section>
+
+  <!-- Countdown -->
+  <div id="countdown" class="hidden">10</div>
+
+  <!-- Live HUD -->
+  <section id="hud" class="hidden">
+    <div class="topbar">
+      <div id="hud-time" class="pill pill-time">0:00</div>
+      <div id="hud-rec" class="pill rec-live hidden"><span class="rec-dot"></span><span id="hud-rec-label">錄影中</span></div>
+      <div id="hud-pill" class="pill">追蹤中</div>
+    </div>
+    <div id="count" class="count">0</div>
+    <div class="hud-bottom">
+      <div class="metrics">
+        <div class="metric"><span id="m-pace" class="m-value">0</span><span class="m-label">跳 / 分鐘</span></div>
+        <div class="metric"><span id="m-kcal" class="m-value">0.0</span><span class="m-label">大卡</span></div>
+        <div class="metric"><span id="m-streak" class="m-value">0</span><span class="m-label">最佳連跳</span></div>
+      </div>
+      <canvas id="rhythm" height="44" aria-label="節奏"></canvas>
+      <button id="btn-stop" class="btn-stop">結束</button>
+    </div>
+  </section>
+
+  <!-- Summary -->
+  <section id="screen-summary" class="screen hidden">
+    <div class="summary-card">
+      <p id="sum-pb" class="pb hidden">個人最佳</p>
+      <p class="sum-eyebrow">訓練完成</p>
+      <p id="sum-jumps" class="sum-jumps">0</p>
+      <p class="sum-jumps-label">下</p>
+      <div class="sum-grid">
+        <div><span id="sum-time" class="s-value">0:00</span><span class="s-label">時間</span></div>
+        <div><span id="sum-kcal" class="s-value">0</span><span class="s-label">大卡</span></div>
+        <div><span id="sum-pace" class="s-value">0</span><span class="s-label">平均 / 分</span></div>
+        <div><span id="sum-peak" class="s-value">0</span><span class="s-label">最高 / 分</span></div>
+      </div>
+      <div id="rec-review" class="rec-review hidden">
+        <video id="rec-video" controls playsinline></video>
+        <div class="rec-actions">
+          <button id="btn-rec-save" class="btn-primary">儲存影片</button>
+          <button id="btn-rec-del" class="btn-secondary">刪除影片</button>
+        </div>
+      </div>
+      <div id="history" class="history"></div>
+      <button id="btn-card" class="btn-secondary card-btn hidden">分享成績卡</button>
+      <button id="btn-again" class="btn-primary">再來一次</button>
+      <button id="btn-stats-sum" class="btn-text">查看統計</button>
+    </div>
+  </section>
+
+  <!-- Stats -->
+  <section id="screen-stats" class="screen hidden">
+    <div class="stats-card">
+      <div class="stats-head">
+        <h2>你的統計</h2>
+        <button id="btn-stats-close" class="btn-icon" aria-label="關閉統計">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div id="stats-body"></div>
+    </div>
+  </section>
+
+  <!-- Settings sheet -->
+  <div id="sheet" class="sheet hidden">
+    <div class="sheet-inner">
+      <h2>設定</h2>
+      <label class="field">
+        <span>體重（公斤）— 用於計算卡路里</span>
+        <input id="set-weight" type="number" inputmode="numeric" min="20" max="250" step="1" />
+      </label>
+      <label class="field field-row">
+        <span>音效（每跳提示音、里程碑播報）</span>
+        <input id="set-sound" type="checkbox" />
+      </label>
+      <label class="field">
+        <span>計數靈敏度</span>
+        <select id="set-sens">
+          <option value="low">低 — 嚴格，只計明顯跳躍</option>
+          <option value="normal">標準</option>
+          <option value="high">高 — 可捕捉極低的快速跳</option>
+        </select>
+      </label>
+      <button id="btn-flip" class="btn-secondary">切換鏡頭</button>
+      <button id="btn-sheet-close" class="btn-primary">完成</button>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
