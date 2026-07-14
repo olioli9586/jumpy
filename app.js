@@ -8,14 +8,15 @@ import {
   PoseLandmarker,
   FilesetResolver,
 } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+import {
+  JumpDetector,
+  L_SHOULDER, R_SHOULDER, L_HIP, R_HIP,
+} from "./detector.js";
 
 const MEDIAPIPE_WASM =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const POSE_MODEL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
-
-// Landmark indices (MediaPipe Pose, 33 points)
-const L_SHOULDER = 11, R_SHOULDER = 12, L_HIP = 23, R_HIP = 24;
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -42,96 +43,6 @@ const settings = Object.assign(
 );
 function saveSettings() {
   localStorage.setItem("jumpy.settings", JSON.stringify(settings));
-}
-
-// ---------- jump detector ----------
-
-// Threshold floor multipliers per sensitivity setting
-const SENS = { low: 1.35, normal: 1, high: 0.7 };
-
-class JumpDetector {
-  constructor() {
-    this.onJump = null;
-    this.reset();
-  }
-  reset() {
-    this.ready = false;
-    this.phase = "down";   // down = falling / on the ground, up = rising
-    this.amp = 0.1;        // running peak-to-trough amplitude, in torso lengths
-    this.lastJumpAt = 0;
-  }
-  // Counts full up-down cycles between a running trough and peak, so a fast
-  // continuous bounce never loses amplitude to a drifting baseline. All
-  // distances are in torso lengths — camera distance doesn't matter.
-  update(lm, tMs) {
-    const hipY = (lm[L_HIP].y + lm[R_HIP].y) / 2;
-    const shY = (lm[L_SHOULDER].y + lm[R_SHOULDER].y) / 2;
-    const x = (lm[L_HIP].x + lm[R_HIP].x) / 2;
-    const torso =
-      (Math.hypot(lm[L_SHOULDER].x - lm[L_HIP].x, lm[L_SHOULDER].y - lm[L_HIP].y) +
-        Math.hypot(lm[R_SHOULDER].x - lm[R_HIP].x, lm[R_SHOULDER].y - lm[R_HIP].y)) / 2;
-    if (!(torso > 0)) return;
-
-    if (!this.ready) {
-      this.ready = true;
-      this.fHip = hipY; this.fSh = shY;
-      this.fX = this.sX = x;
-      this.fT = this.sT = torso;
-      this.peak = this.trough = -hipY / torso;
-      this.shBase = this.shMax = -shY / torso;
-      return;
-    }
-    // light smoothing only — heavy smoothing eats the amplitude of fast low skips
-    this.fHip += 0.7 * (hipY - this.fHip);
-    this.fSh += 0.7 * (shY - this.fSh);
-    this.fX += 0.3 * (x - this.fX);     this.sX += 0.04 * (x - this.sX);
-    this.fT += 0.3 * (torso - this.fT); this.sT += 0.04 * (torso - this.sT);
-
-    const s = -this.fHip / this.fT;   // hip height, up = positive
-    const shS = -this.fSh / this.fT;  // shoulder height
-
-    // walking gate: sideways drift, or apparent body size changing
-    // (= moving toward/away from the camera) — jumps happen in place
-    const drifting =
-      Math.abs(this.fX - this.sX) / this.fT > 0.35 ||
-      Math.abs(this.fT - this.sT) / this.sT > 0.1;
-    if (drifting) {
-      this.phase = "down";
-      this.peak = this.trough = s;
-      this.shBase = this.shMax = shS;
-      return;
-    }
-
-    this.amp *= 0.999;
-    const swing = Math.max(0.07 * (SENS[settings.sensitivity] ?? 1), this.amp * 0.45);
-
-    if (this.phase === "up") {
-      if (s > this.peak) this.peak = s;
-      if (shS > this.shMax) this.shMax = shS;
-      // dropped clearly below the peak → he's landing
-      if (this.peak - s > swing * 0.45) {
-        const rise = this.peak - this.trough;
-        const shRise = this.shMax - this.shBase;
-        // hips must have risen a full swing, and the shoulders must have
-        // ridden up with them — arms alone can't move the hips
-        if (rise >= swing && shRise > rise * 0.4 && tMs - this.lastJumpAt > 180) {
-          this.lastJumpAt = tMs;
-          this.amp = 0.75 * this.amp + 0.25 * rise;
-          this.onJump?.(tMs);
-        }
-        this.phase = "down";
-        this.trough = s;
-      }
-    } else {
-      if (s < this.trough) this.trough = s;
-      // rose clearly off the trough → a new jump is starting
-      if (s - this.trough > swing * 0.45) {
-        this.phase = "up";
-        this.peak = s;
-        this.shBase = this.shMax = shS;
-      }
-    }
-  }
 }
 
 // ---------- session ----------
@@ -186,6 +97,7 @@ function tick() {
 }
 function announce(text) {
   if (!settings.sound || !("speechSynthesis" in window)) return;
+  speechSynthesis.cancel(); // iOS: a jammed queue blocks all later speech
   const u = new SpeechSynthesisUtterance(text);
   u.lang = "zh-TW";
   u.rate = 1.1;
@@ -198,7 +110,7 @@ let landmarker = null;
 let stream = null;
 let lastVideoTime = -1;
 let lastSeenAt = 0;
-const detector = new JumpDetector();
+const detector = new JumpDetector(() => settings.sensitivity);
 
 async function startCamera() {
   stream?.getTracks().forEach((t) => t.stop());
@@ -270,7 +182,13 @@ function poseLoop() {
   lastVideoTime = els.cam.currentTime;
 
   const now = performance.now();
-  const result = landmarker.detectForVideo(els.cam, now);
+  let result;
+  try {
+    result = landmarker.detectForVideo(els.cam, now);
+  } catch (err) {
+    console.error("pose detect failed:", err);
+    return; // skip this frame, keep the loop alive
+  }
   const lm = result.landmarks?.[0];
 
   const visible =
@@ -290,7 +208,11 @@ function poseLoop() {
   }
 
   if (session.active && recActive()) {
-    captureRecFrame(visible ? lm : null, now);
+    try {
+      captureRecFrame(visible ? lm : null, now);
+    } catch (err) {
+      console.error("recording frame failed:", err); // never break counting
+    }
   }
 }
 
@@ -407,11 +329,18 @@ function captureRecFrame(lm, now) {
   }
 }
 
+// endSession awaits this, so a wedged encoder/recorder must never hang it
+const withTimeout = (promise, ms) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("recording stop timed out")), ms)),
+  ]);
+
 async function stopRecording() {
   $("hud-rec").classList.add("hidden");
   if (rec.encoder) {
     try {
-      await rec.encoder.flush();
+      await withTimeout(rec.encoder.flush(), 8000);
       rec.muxer.finalize();
       const blob = new Blob([rec.muxer.target.buffer], { type: "video/mp4" });
       return blob;
@@ -426,9 +355,13 @@ async function stopRecording() {
   }
   return new Promise((resolve) => {
     if (!rec.mr || rec.mr.state === "inactive") return resolve(null);
-    rec.mr.onstop = () =>
-      resolve(new Blob(rec.chunks, { type: rec.mr.mimeType || "video/mp4" }));
-    rec.mr.stop();
+    const finish = () => {
+      clearTimeout(fallback);
+      resolve(rec.chunks.length ? new Blob(rec.chunks, { type: rec.mr.mimeType || "video/mp4" }) : null);
+    };
+    const fallback = setTimeout(finish, 4000); // iOS sometimes never fires onstop
+    rec.mr.onstop = finish;
+    try { rec.mr.stop(); } catch { finish(); }
   });
 }
 
@@ -639,6 +572,7 @@ detector.onJump = (t) => {
 
 let hudTimer = null;
 function startHudLoop() {
+  clearInterval(hudTimer);
   hudTimer = setInterval(() => {
     const now = performance.now();
     els.hudTime.textContent = fmtTime(now - session.startedAt);
@@ -735,8 +669,10 @@ async function beginSession() {
 }
 
 async function endSession() {
+  if (!session.active) return; // double-tap on 結束
   session.active = false;
   clearInterval(hudTimer);
+  hudTimer = null;
   wakeLock?.release().catch(() => {});
   wakeLock = null;
 
@@ -986,6 +922,7 @@ addEventListener("resize", resizeOverlay);
 
 $("btn-enable").addEventListener("click", enableCamera);
 $("btn-go").addEventListener("click", () => {
+  if (state !== "ready") return; // ignore double-taps mid-countdown
   // unlock audio + speech inside the user gesture (iOS requirement)
   tick();
   beginCountdown();

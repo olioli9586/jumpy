@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Jumpy detector test harness</title>
+  <style>
+    body { background: #0b0e13; color: #e6e8ee; font: 13px/1.5 monospace; margin: 16px; }
+    canvas { display: block; margin: 8px 0; background: #12161f; max-width: 100%; }
+    #status { font-size: 15px; color: #ffb347; }
+    #out { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="status">loading…</div>
+  <canvas id="frame" width="480" height="270"></canvas>
+  <canvas id="plot" width="1200" height="360"></canvas>
+  <pre id="out"></pre>
+  <!-- must stay visible: Chrome pauses hidden video-only media to save power -->
+  <video id="v" muted playsinline preload="auto" style="width:180px;position:fixed;top:8px;right:8px"></video>
+  <script type="module" src="debug.js"></script>
+</body>
+</html>
