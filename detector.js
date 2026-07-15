@@ -126,14 +126,18 @@ export class JumpDetector {
         // a real jump lifts the whole body at once, fast: both hips a full
         // swing, shoulders / knees / ankles riding up with them (arms alone
         // can't do that), and the whole rise inside one airborne cycle
-        // (slow landmark drift on a stationary body takes far longer)
+        // (slow landmark drift on a stationary body takes far longer).
+        // Ratios tuned on real footage: jumping with a rope drops shoulder
+        // rise to ~0.2-0.4 of hip rise (arms swing down as the body goes up),
+        // while hand-waving false positives sit near 0 on knees/ankles and
+        // take >1 s to "rise" — see debug.html harness results.
         const gates = {
           rise: rise >= swing,
-          side: sideRise > rise * 0.4,
-          shoulder: shRise > rise * 0.4,
-          knee: !this.kneeSeen || kneeRise > rise * 0.35,
-          ankle: !this.ankSeen || ankRise > rise * 0.35,
-          riseTime: tMs - this.riseAt < 900,
+          side: sideRise > rise * 0.25,
+          shoulder: shRise > rise * 0.2,
+          knee: !this.kneeSeen || kneeRise > rise * 0.25,
+          ankle: !this.ankSeen || ankRise > rise * 0.2,
+          riseTime: tMs - this.riseAt < 700,
           refractory: tMs - this.lastJumpAt > 180,
         };
         const counted = Object.values(gates).every(Boolean);

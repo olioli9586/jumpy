@@ -175,13 +175,31 @@ function drawSkeleton(lm) {
   strokeBones(ctx, lm, px, 3);
 }
 
+// iOS pauses the camera <video> when the user plays the session replay or
+// opens the share sheet, and can kill the track after backgrounding — either
+// way frames stop, the pill freezes, and 開始 never re-enables. Watch for a
+// stalled feed and revive it.
+let lastFrameAt = 0, camFixAt = 0;
+function ensureCameraLive(now) {
+  if (!stream || now - camFixAt < 1500) return;
+  camFixAt = now;
+  const track = stream.getVideoTracks()[0];
+  if (!track || track.readyState === "ended") {
+    startCamera().catch(() => {});
+  } else if (els.cam.paused) {
+    els.cam.play().catch(() => {});
+  }
+}
+
 function poseLoop() {
   requestAnimationFrame(poseLoop);
-  if (!landmarker || els.cam.readyState < 2) return;
-  if (els.cam.currentTime === lastVideoTime) return;
-  lastVideoTime = els.cam.currentTime;
-
   const now = performance.now();
+  if (!landmarker || els.cam.readyState < 2 || els.cam.currentTime === lastVideoTime) {
+    if (now - lastFrameAt > 1200) ensureCameraLive(now);
+    return;
+  }
+  lastVideoTime = els.cam.currentTime;
+  lastFrameAt = now;
   let result;
   try {
     result = landmarker.detectForVideo(els.cam, now);
@@ -931,6 +949,7 @@ $("btn-stop").addEventListener("click", endSession);
 $("btn-again").addEventListener("click", () => {
   if (rec.blob && !rec.saved && !confirm("影片尚未儲存，要放棄它嗎？")) return;
   discardRecording();
+  if (els.cam.paused) els.cam.play().catch(() => {});
   $("btn-go").disabled = pillOn !== true;
   show("ready");
 });

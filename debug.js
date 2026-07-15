@@ -10,11 +10,14 @@ import {
   FilesetResolver,
 } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 import MP4Box from "https://cdn.jsdelivr.net/npm/mp4box@0.5.2/+esm";
-import { JumpDetector, L_SHOULDER, R_SHOULDER, L_HIP, R_HIP } from "./detector.js";
+import { JumpDetector, L_SHOULDER, R_SHOULDER, L_HIP, R_HIP } from "./detector.js?v=2";
 
 const q = new URLSearchParams(location.search);
 const SRC = q.get("v");
 const SENSITIVITY = q.get("sens") || "normal";
+// For clips recorded by the app's N× timelapse mode: scales timestamps back
+// to real time so the detector's timing gates behave as they would live.
+const LAPSE = parseFloat(q.get("lapse")) || 1;
 
 const frame = document.getElementById("frame"), fx = frame.getContext("2d");
 const plot = document.getElementById("plot"), px = plot.getContext("2d");
@@ -148,7 +151,7 @@ async function run() {
 
   let visibleFrames = 0, frames = 0, lastT = -1;
   const processFrame = (vf) => {
-    const tMs = vf.timestamp / 1000;
+    const tMs = (vf.timestamp / 1000) * LAPSE;
     if (tMs <= lastT) { vf.close(); return; } // decoder emits presentation order; guard anyway
     lastT = tMs;
     frames++;
@@ -228,6 +231,7 @@ async function run() {
   const summary = {
     video: SRC,
     sensitivity: SENSITIVITY,
+    lapse: LAPSE,
     durationS: +durationS.toFixed(2),
     rotation,
     frames,
