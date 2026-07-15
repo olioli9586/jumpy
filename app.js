@@ -175,19 +175,22 @@ function drawSkeleton(lm) {
   strokeBones(ctx, lm, px, 3);
 }
 
-// iOS pauses the camera <video> when the user plays the session replay or
-// opens the share sheet, and can kill the track after backgrounding — either
-// way frames stop, the pill freezes, and 開始 never re-enables. Watch for a
-// stalled feed and revive it.
+// iOS freezes the camera in several ways: it pauses the <video> when other
+// media plays (session replay, share sheet), and it can mute or kill the
+// camera track around session transitions or backgrounding — the track still
+// says "live" but delivers no frames. Any of these freezes the pill and 開始
+// never re-enables. Watch for a stalled feed and revive it; if resuming
+// playback isn't enough, reacquire the camera (what the flip-camera
+// workaround effectively did).
 let lastFrameAt = 0, camFixAt = 0;
 function ensureCameraLive(now) {
   if (!stream || now - camFixAt < 1500) return;
   camFixAt = now;
   const track = stream.getVideoTracks()[0];
-  if (!track || track.readyState === "ended") {
-    startCamera().catch(() => {});
-  } else if (els.cam.paused) {
+  if (els.cam.paused && track?.readyState === "live" && !track.muted) {
     els.cam.play().catch(() => {});
+  } else {
+    startCamera().catch(() => {});
   }
 }
 
