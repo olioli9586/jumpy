@@ -258,7 +258,7 @@ function setPill(bodyVisible) {
 const OUT_FPS = 30;
 const FRAME_US = Math.round(1_000_000 / OUT_FPS);
 
-let recMode = "off"; // off | lapse10 | lapse25 | lapse50 ("real" exists only as internal fallback)
+let recMode = "off"; // off | real | lapse10 | lapse25 | lapse50
 const rec = {
   mode: "off", factor: 5, mr: null, chunks: [], canvas: null, ctx: null,
   encoder: null, muxer: null, frameN: 0, outN: 0,
@@ -958,8 +958,8 @@ $("btn-again").addEventListener("click", () => {
 });
 
 const btnRec = $("btn-rec");
-const REC_ORDER = ["off", "lapse10", "lapse25", "lapse50"];
-const REC_LABELS = { off: "錄影：關", lapse10: "錄影：縮時 10×", lapse25: "錄影：縮時 25×", lapse50: "錄影：縮時 50×" };
+const REC_ORDER = ["off", "real", "lapse10", "lapse25", "lapse50"];
+const REC_LABELS = { off: "錄影：關", real: "錄影：一般速度", lapse10: "錄影：縮時 10×", lapse25: "錄影：縮時 25×", lapse50: "錄影：縮時 50×" };
 if (!recSupported()) btnRec.classList.add("hidden");
 btnRec.addEventListener("click", () => {
   recMode = REC_ORDER[(REC_ORDER.indexOf(recMode) + 1) % REC_ORDER.length];

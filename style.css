@@ -602,3 +602,14 @@ button { font-family: inherit; cursor: pointer; border: none; color: inherit; ba
   #rhythm { display: none; }
   .btn-stop { width: auto; padding: 15px 22px; }
 }
+
+/* tiny always-visible version tag for telling deployed builds apart */
+#version {
+  position: fixed;
+  right: 10px;
+  bottom: calc(6px + env(safe-area-inset-bottom));
+  z-index: 30;
+  font-size: 10px;
+  color: rgba(139, 149, 166, 0.55);
+  pointer-events: none;
+}
