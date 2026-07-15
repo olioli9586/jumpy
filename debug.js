@@ -223,6 +223,7 @@ async function run() {
   }
   const evt = (d) => ({
     t: +(d.tMs / 1000).toFixed(2),
+    mode: d.mode,
     failed: Object.keys(d.gates).filter((k) => !d.gates[k]),
     rise: fmt(d.rise), swing: fmt(d.swing), sideRise: fmt(d.sideRise),
     shRise: fmt(d.shRise), kneeRise: fmt(d.kneeRise), ankRise: fmt(d.ankRise),

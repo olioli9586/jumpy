@@ -24,7 +24,17 @@ export class JumpDetector {
     this.amp = 0.1;        // running peak-to-trough amplitude, in torso lengths
     this.lastJumpAt = 0;
     this.riseAt = 0;       // when the current rise left its trough
+    this.recent = [];      // timestamps of the last few counted jumps
+    this.relaxStreak = 0;  // consecutive rhythm-mode counts
     this.dbg = null;
+  }
+  // Steady cadence of the last few counted jumps, or 0 if none.
+  rhythmPeriod() {
+    if (this.recent.length < 4) return 0;
+    const iv = [];
+    for (let i = 1; i < this.recent.length; i++) iv.push(this.recent[i] - this.recent[i - 1]);
+    const mean = iv.reduce((a, b) => a + b, 0) / iv.length;
+    return iv.every((v) => Math.abs(v - mean) < mean * 0.3) ? mean : 0;
   }
   // Counts full up-down cycles between a running trough and peak, so a fast
   // continuous bounce never loses amplitude to a drifting baseline. All
@@ -140,12 +150,40 @@ export class JumpDetector {
           riseTime: tMs - this.riseAt < 700,
           refractory: tMs - this.lastJumpAt > 180,
         };
-        const counted = Object.values(gates).every(Boolean);
+        let counted = Object.values(gates).every(Boolean);
+        let mode = "full";
+        // Fast low skips (3+ jumps/s) smear knee/ankle motion in the pose
+        // stream and every measured rise shrinks, so full gating drops real
+        // jumps. Once a steady rhythm exists — reachable only through fully
+        // gated jumps, which hand-waving never passes — accept ON-BEAT
+        // landings on softer evidence: hips still must rise, plus any two
+        // body parts riding along at half strength. Off-beat candidates
+        // (criss-cross phantom peaks, post-run hand motion) still face the
+        // full gates, and at most 3 soft counts may chain in a row.
+        if (!counted && gates.riseTime && gates.refractory) {
+          const period = this.rhythmPeriod();
+          const since = tMs - this.lastJumpAt;
+          if (
+            period > 0 && this.relaxStreak < 3 &&
+            since > 0.6 * period && since < 1.6 * period &&
+            rise >= swing * 0.75
+          ) {
+            let soft = 0;
+            if (sideRise > rise * 0.125) soft++;
+            if (shRise > rise * 0.1) soft++;
+            if (this.kneeSeen && kneeRise > rise * 0.125) soft++;
+            if (this.ankSeen && ankRise > rise * 0.1) soft++;
+            if (soft >= 2) { counted = true; mode = "rhythm"; }
+          }
+        }
         this.onDebug?.({
-          tMs, counted, gates, rise, swing, sideRise, shRise, kneeRise, ankRise,
+          tMs, counted, mode, gates, rise, swing, sideRise, shRise, kneeRise, ankRise,
           kneeSeen: this.kneeSeen, ankSeen: this.ankSeen, riseMs: tMs - this.riseAt,
         });
         if (counted) {
+          this.relaxStreak = mode === "rhythm" ? this.relaxStreak + 1 : 0;
+          this.recent.push(tMs);
+          if (this.recent.length > 5) this.recent.shift();
           this.lastJumpAt = tMs;
           this.amp = 0.75 * this.amp + 0.25 * rise;
           this.onJump?.(tMs);
