@@ -5,6 +5,7 @@
 // so what gets tested is exactly what ships.
 
 // Landmark indices (MediaPipe Pose, 33 points)
+export const NOSE = 0;
 export const L_SHOULDER = 11, R_SHOULDER = 12, L_HIP = 23, R_HIP = 24;
 export const L_KNEE = 25, R_KNEE = 26, L_ANKLE = 27, R_ANKLE = 28;
 
@@ -26,6 +27,7 @@ export class JumpDetector {
     this.riseAt = 0;       // when the current rise left its trough
     this.recent = [];      // timestamps of the last few counted jumps
     this.relaxStreak = 0;  // consecutive rhythm-mode counts
+    this.pending = [];     // candidates held until enough of them confirm a run
     this.dbg = null;
   }
   // Steady cadence of the last few counted jumps, or 0 if none.
@@ -41,6 +43,8 @@ export class JumpDetector {
   // distances are in torso lengths — camera distance doesn't matter.
   update(lm, tMs) {
     const hipY = (lm[L_HIP].y + lm[R_HIP].y) / 2;
+    const noseY = lm[NOSE].y;
+    const noseVis = (lm[NOSE].visibility ?? 1) > 0.5;
     const shY = (lm[L_SHOULDER].y + lm[R_SHOULDER].y) / 2;
     const kneeY = (lm[L_KNEE].y + lm[R_KNEE].y) / 2;
     const ankY = (lm[L_ANKLE].y + lm[R_ANKLE].y) / 2;
@@ -48,6 +52,11 @@ export class JumpDetector {
       (lm[L_KNEE].visibility ?? 1) > 0.5 && (lm[R_KNEE].visibility ?? 1) > 0.5;
     const ankVis =
       (lm[L_ANKLE].visibility ?? 1) > 0.5 && (lm[R_ANKLE].visibility ?? 1) > 0.5;
+    const visMin = Math.min(
+      ...[L_SHOULDER, R_SHOULDER, L_HIP, R_HIP, L_KNEE, R_KNEE, L_ANKLE, R_ANKLE].map(
+        (i) => lm[i].visibility ?? 1
+      )
+    );
     const x = (lm[L_HIP].x + lm[R_HIP].x) / 2;
     const torso =
       (Math.hypot(lm[L_SHOULDER].x - lm[L_HIP].x, lm[L_SHOULDER].y - lm[L_HIP].y) +
@@ -57,6 +66,9 @@ export class JumpDetector {
     if (!this.ready) {
       this.ready = true;
       this.fHip = hipY; this.fSh = shY; this.fKnee = kneeY; this.fAnk = ankY;
+      this.fNose = noseY;
+      this.noseBase = this.noseMax = -noseY / torso;
+      this.noseSeen = noseVis;
       this.fHipL = lm[L_HIP].y; this.fHipR = lm[R_HIP].y;
       this.fX = this.sX = x;
       this.fT = this.sT = torso;
@@ -72,6 +84,7 @@ export class JumpDetector {
     }
     // light smoothing only — heavy smoothing eats the amplitude of fast low skips
     this.fHip += 0.7 * (hipY - this.fHip);
+    this.fNose += 0.7 * (noseY - this.fNose);
     this.fSh += 0.7 * (shY - this.fSh);
     this.fKnee += 0.7 * (kneeY - this.fKnee);
     this.fAnk += 0.7 * (ankY - this.fAnk);
@@ -84,6 +97,7 @@ export class JumpDetector {
     // perturbs the instantaneous torso length, which used to lift hip and
     // shoulder heights together and fake a jump on a stationary person
     const s = -this.fHip / this.sT;   // hip height, up = positive
+    const nS = -this.fNose / this.sT; // head height
     const shS = -this.fSh / this.sT;  // shoulder height
     const kS = -this.fKnee / this.sT; // knee height
     const aS = -this.fAnk / this.sT;  // ankle height
@@ -98,6 +112,8 @@ export class JumpDetector {
     if (drifting) {
       this.phase = "down";
       this.peak = this.trough = s;
+      this.noseBase = this.noseMax = nS;
+      this.noseSeen = noseVis;
       this.shBase = this.shMax = shS;
       this.kneeBase = this.kneeMax = kS;
       this.ankBase = this.ankMax = aS;
@@ -114,6 +130,7 @@ export class JumpDetector {
 
     if (this.phase === "up") {
       if (s > this.peak) this.peak = s;
+      if (nS > this.noseMax) this.noseMax = nS;
       if (shS > this.shMax) this.shMax = shS;
       if (kS > this.kneeMax) this.kneeMax = kS;
       if (aS > this.ankMax) this.ankMax = aS;
@@ -121,9 +138,13 @@ export class JumpDetector {
       if (sR > this.hipRMax) this.hipRMax = sR;
       this.kneeSeen &&= kneeVis;
       this.ankSeen &&= ankVis;
+      this.noseSeen &&= noseVis;
+      this.riseTorsoDev = Math.max(this.riseTorsoDev, Math.abs(this.fT - this.sT) / this.sT);
+      this.riseVisMin = Math.min(this.riseVisMin, visMin);
       // dropped clearly below the peak → he's landing
       if (this.peak - s > swing * 0.45) {
         const rise = this.peak - this.trough;
+        const noseRise = this.noseMax - this.noseBase;
         const shRise = this.shMax - this.shBase;
         const kneeRise = this.kneeMax - this.kneeBase;
         const ankRise = this.ankMax - this.ankBase;
@@ -176,18 +197,44 @@ export class JumpDetector {
             if (soft >= 2) { counted = true; mode = "rhythm"; }
           }
         }
-        this.onDebug?.({
-          tMs, counted, mode, gates, rise, swing, sideRise, shRise, kneeRise, ankRise,
-          kneeSeen: this.kneeSeen, ankSeen: this.ankSeen, riseMs: tMs - this.riseAt,
-        });
+        // Run confirmation: real jumping is continuous (the next jump lands
+        // within ~2 s), while MediaPipe's whole-skeleton glitches — hands at
+        // the waist or a rope swung overhead shift EVERY landmark up
+        // coherently, at high confidence, defeating the per-part gates —
+        // fire sporadically (at most two ~1.5 s apart on real footage). So
+        // candidates are held until three in a row arrive each within 2 s of
+        // the last, then all count retroactively; a stray one or two expire
+        // uncounted. Losing a deliberate lone jump is the accepted cost.
+        let held = false;
         if (counted) {
+          const emit = (t) => {
+            this.recent.push(t);
+            if (this.recent.length > 5) this.recent.shift();
+            this.lastJumpAt = t;
+            this.onJump?.(t);
+          };
           this.relaxStreak = mode === "rhythm" ? this.relaxStreak + 1 : 0;
-          this.recent.push(tMs);
-          if (this.recent.length > 5) this.recent.shift();
-          this.lastJumpAt = tMs;
-          this.amp = 0.75 * this.amp + 0.25 * rise;
-          this.onJump?.(tMs);
+          if (this.lastJumpAt > 0 && tMs - this.lastJumpAt <= 2000) {
+            emit(tMs); // run already going
+          } else {
+            if (this.pending.length && tMs - this.pending.at(-1) > 2000) this.pending = [];
+            this.pending.push(tMs);
+            if (this.pending.length >= 3) {
+              for (const t of this.pending) emit(t);
+              this.pending = [];
+            } else {
+              held = true;
+              counted = false;
+            }
+          }
+          if (!held) this.amp = 0.75 * this.amp + 0.25 * rise;
         }
+        this.onDebug?.({
+          tMs, counted, held, mode, gates, rise, swing, sideRise, shRise, kneeRise, ankRise,
+          noseRise, noseSeen: this.noseSeen,
+          kneeSeen: this.kneeSeen, ankSeen: this.ankSeen, riseMs: tMs - this.riseAt,
+          riseTorsoDev: this.riseTorsoDev, riseVisMin: this.riseVisMin,
+        });
         this.phase = "down";
         this.trough = s;
       }
@@ -197,6 +244,8 @@ export class JumpDetector {
       if (s - this.trough > swing * 0.45) {
         this.phase = "up";
         this.peak = s;
+        this.noseBase = this.noseMax = nS;
+        this.noseSeen = noseVis;
         this.shBase = this.shMax = shS;
         this.kneeBase = this.kneeMax = kS;
         this.ankBase = this.ankMax = aS;
@@ -205,8 +254,11 @@ export class JumpDetector {
         this.kneeSeen = kneeVis;
         this.ankSeen = ankVis;
         this.riseAt = tMs;
+        this.riseTorsoDev = Math.abs(this.fT - this.sT) / this.sT;
+        this.riseVisMin = visMin;
       }
     }
-    this.dbg = { t: tMs, s, shS, kS, aS, sL, sR, swing, phase: this.phase };
+    this.dbg = { t: tMs, s, shS, kS, aS, sL, sR, swing, phase: this.phase,
+      tR: this.fT / this.sT, visMin };
   }
 }

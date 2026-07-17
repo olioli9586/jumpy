@@ -139,6 +139,9 @@ async function run() {
   const wx = work.getContext("2d");
 
   // keep a thumbnail of every frame that produced a COUNT, for eyeballing
+  // optional filmstrips: snapshot every frame inside ?snapwin=<startS>,<endS>[;<startS>,<endS>…] (real time)
+  const snapwins = (q.get("snapwin") || "").split(";").filter(Boolean)
+    .map((w) => w.split(",").map(Number));
   detector.onDebug = (d) => {
     decisions.push(d);
     if (d.counted) {
@@ -180,6 +183,18 @@ async function run() {
       trace.push({ t: tMs, ...(detector.dbg ?? {}) });
     } else {
       trace.push({ t: tMs, s: null });
+    }
+    if (snapwins.some((w) => tMs >= w[0] * 1000 && tMs <= w[1] * 1000)) {
+      const th = document.createElement("canvas");
+      th.width = 180; th.height = Math.round((180 * work.height) / work.width);
+      const tc = th.getContext("2d");
+      tc.drawImage(work, 0, 0, th.width, th.height);
+      if (lm) { // dots on the landmarks the detector uses
+        tc.fillStyle = "#50dc78";
+        for (const i of [L_SHOULDER, R_SHOULDER, L_HIP, R_HIP, 25, 26, 27, 28])
+          tc.fillRect(lm[i].x * th.width - 2, lm[i].y * th.height - 2, 4, 4);
+      }
+      snaps.push({ t: tMs, url: th.toDataURL("image/jpeg", 0.7) });
     }
     if (frames % 20 === 0) {
       fx.drawImage(work, 0, 0, frame.width, frame.height);
@@ -223,11 +238,13 @@ async function run() {
   }
   const evt = (d) => ({
     t: +(d.tMs / 1000).toFixed(2),
-    mode: d.mode,
+    mode: d.mode, held: d.held,
     failed: Object.keys(d.gates).filter((k) => !d.gates[k]),
     rise: fmt(d.rise), swing: fmt(d.swing), sideRise: fmt(d.sideRise),
     shRise: fmt(d.shRise), kneeRise: fmt(d.kneeRise), ankRise: fmt(d.ankRise),
+    noseRise: fmt(d.noseRise), noseSeen: d.noseSeen,
     kneeSeen: d.kneeSeen, ankSeen: d.ankSeen, riseMs: Math.round(d.riseMs),
+    torsoDev: fmt(d.riseTorsoDev), visMin: fmt(d.riseVisMin),
   });
   const summary = {
     video: SRC,
@@ -240,12 +257,14 @@ async function run() {
     counted: jumps.length,
     jumpTimesS: jumps.map((t) => +(t / 1000).toFixed(2)),
     countedEvents: decisions.filter((d) => d.counted).map(evt),
-    rejected: decisions.filter((d) => !d.counted).map(evt),
+    heldEvents: decisions.filter((d) => d.held).map(evt),
+    rejected: decisions.filter((d) => !d.counted && !d.held).map(evt),
   };
   status.textContent = `DONE — counted ${jumps.length} jumps in ${summary.durationS}s (${visibleFrames}/${frames} frames with body visible)`;
   out.textContent = JSON.stringify(summary, null, 2);
   console.log("RESULT " + JSON.stringify(summary));
   window.RESULT = summary;
+  window.TRACE = trace;
   document.title = "harness-done";
 }
 
