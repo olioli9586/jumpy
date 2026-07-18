@@ -245,6 +245,7 @@ async function run() {
     noseRise: fmt(d.noseRise), noseSeen: d.noseSeen,
     kneeSeen: d.kneeSeen, ankSeen: d.ankSeen, riseMs: Math.round(d.riseMs),
     torsoDev: fmt(d.riseTorsoDev), visMin: fmt(d.riseVisMin),
+    wristTravel: fmt(d.wristTravel),
   });
   const summary = {
     video: SRC,

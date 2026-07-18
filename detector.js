@@ -6,7 +6,8 @@
 
 // Landmark indices (MediaPipe Pose, 33 points)
 export const NOSE = 0;
-export const L_SHOULDER = 11, R_SHOULDER = 12, L_HIP = 23, R_HIP = 24;
+export const L_SHOULDER = 11, R_SHOULDER = 12, L_WRIST = 15, R_WRIST = 16;
+export const L_HIP = 23, R_HIP = 24;
 export const L_KNEE = 25, R_KNEE = 26, L_ANKLE = 27, R_ANKLE = 28;
 
 // Threshold floor multipliers per sensitivity setting
@@ -28,6 +29,9 @@ export class JumpDetector {
     this.recent = [];      // timestamps of the last few counted jumps
     this.relaxStreak = 0;  // consecutive rhythm-mode counts
     this.pending = [];     // candidates held until enough of them confirm a run
+    this.armUpStreak = 0;  // consecutive frames with a wrist near/above shoulder level
+    this.riseArmUp = false;
+    this.riseWristTravel = 0;
     this.dbg = null;
   }
   // Steady cadence of the last few counted jumps, or 0 if none.
@@ -67,6 +71,7 @@ export class JumpDetector {
       this.ready = true;
       this.fHip = hipY; this.fSh = shY; this.fKnee = kneeY; this.fAnk = ankY;
       this.fNose = noseY;
+      this.fLW = lm[L_WRIST].y; this.fRW = lm[R_WRIST].y;
       this.noseBase = this.noseMax = -noseY / torso;
       this.noseSeen = noseVis;
       this.fHipL = lm[L_HIP].y; this.fHipR = lm[R_HIP].y;
@@ -90,8 +95,26 @@ export class JumpDetector {
     this.fAnk += 0.7 * (ankY - this.fAnk);
     this.fHipL += 0.7 * (lm[L_HIP].y - this.fHipL);
     this.fHipR += 0.7 * (lm[R_HIP].y - this.fHipR);
+    this.fLW += 0.7 * (lm[L_WRIST].y - this.fLW);
+    this.fRW += 0.7 * (lm[R_WRIST].y - this.fRW);
     this.fX += 0.3 * (x - this.fX);     this.sX += 0.04 * (x - this.sX);
     this.fT += 0.3 * (torso - this.fT); this.sT += 0.04 * (torso - this.sT);
+
+    // Hands at or above shoulder level mean waving / swinging the rope
+    // overhead, never rope jumping — the rope is turned from the hips, a
+    // full torso length below the shoulders. Big arm swings drag the whole
+    // tracked skeleton up and fake a rise no landmark gate can catch.
+    // Two consecutive frames so a single glitched wrist can't veto.
+    const lwVis = (lm[L_WRIST].visibility ?? 1) > 0.5;
+    const rwVis = (lm[R_WRIST].visibility ?? 1) > 0.5;
+    const armUp =
+      (lwVis && lm[L_WRIST].y < lm[L_SHOULDER].y + 0.25 * this.sT) ||
+      (rwVis && lm[R_WRIST].y < lm[R_SHOULDER].y + 0.25 * this.sT);
+    this.armUpStreak = armUp ? this.armUpStreak + 1 : 0;
+    // wrist height relative to the hips — real jumping carries the hands
+    // along with the body, so this barely moves within one rise
+    const lwRel = (this.fLW - this.fHip) / this.sT;
+    const rwRel = (this.fRW - this.fHip) / this.sT;
 
     // normalize by the SLOW torso estimate: arm/hand motion near the body
     // perturbs the instantaneous torso length, which used to lift hip and
@@ -141,6 +164,19 @@ export class JumpDetector {
       this.noseSeen &&= noseVis;
       this.riseTorsoDev = Math.max(this.riseTorsoDev, Math.abs(this.fT - this.sT) / this.sT);
       this.riseVisMin = Math.min(this.riseVisMin, visMin);
+      if (this.armUpStreak >= 2) this.riseArmUp = true;
+      if (lwVis) {
+        this.lwMin = Math.min(this.lwMin, lwRel);
+        this.lwMax = Math.max(this.lwMax, lwRel);
+      }
+      if (rwVis) {
+        this.rwMin = Math.min(this.rwMin, rwRel);
+        this.rwMax = Math.max(this.rwMax, rwRel);
+      }
+      this.riseWristTravel = Math.max(
+        this.lwMax > this.lwMin ? this.lwMax - this.lwMin : 0,
+        this.rwMax > this.rwMin ? this.rwMax - this.rwMin : 0
+      );
       // dropped clearly below the peak → he's landing
       if (this.peak - s > swing * 0.45) {
         const rise = this.peak - this.trough;
@@ -170,6 +206,8 @@ export class JumpDetector {
           ankle: !this.ankSeen || ankRise > rise * 0.2,
           riseTime: tMs - this.riseAt < 700,
           refractory: tMs - this.lastJumpAt > 180,
+          arms: !this.riseArmUp,
+          armSwing: this.riseWristTravel < 0.5,
         };
         let counted = Object.values(gates).every(Boolean);
         let mode = "full";
@@ -181,7 +219,7 @@ export class JumpDetector {
         // body parts riding along at half strength. Off-beat candidates
         // (criss-cross phantom peaks, post-run hand motion) still face the
         // full gates, and at most 3 soft counts may chain in a row.
-        if (!counted && gates.riseTime && gates.refractory) {
+        if (!counted && gates.riseTime && gates.refractory && gates.arms && gates.armSwing) {
           const period = this.rhythmPeriod();
           const since = tMs - this.lastJumpAt;
           if (
@@ -234,6 +272,7 @@ export class JumpDetector {
           noseRise, noseSeen: this.noseSeen,
           kneeSeen: this.kneeSeen, ankSeen: this.ankSeen, riseMs: tMs - this.riseAt,
           riseTorsoDev: this.riseTorsoDev, riseVisMin: this.riseVisMin,
+          wristTravel: this.riseWristTravel,
         });
         this.phase = "down";
         this.trough = s;
@@ -256,6 +295,12 @@ export class JumpDetector {
         this.riseAt = tMs;
         this.riseTorsoDev = Math.abs(this.fT - this.sT) / this.sT;
         this.riseVisMin = visMin;
+        this.riseArmUp = this.armUpStreak >= 2;
+        this.lwMin = lwVis ? lwRel : Infinity;
+        this.lwMax = lwVis ? lwRel : -Infinity;
+        this.rwMin = rwVis ? rwRel : Infinity;
+        this.rwMax = rwVis ? rwRel : -Infinity;
+        this.riseWristTravel = 0;
       }
     }
     this.dbg = { t: tMs, s, shS, kS, aS, sL, sR, swing, phase: this.phase,
