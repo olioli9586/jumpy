@@ -218,7 +218,9 @@ function poseLoop() {
       (i) => (lm[i].visibility ?? 1) > 0.5
     );
 
-  drawSkeleton(visible ? lm : null);
+  // skeleton is alignment feedback for the ready screen only — once 開始 is
+  // pressed it just clutters the view, so the session shows clean video
+  drawSkeleton(state === "ready" && visible ? lm : null);
 
   if (visible) {
     lastSeenAt = now;
@@ -230,7 +232,7 @@ function poseLoop() {
 
   if (session.active && recActive()) {
     try {
-      captureRecFrame(visible ? lm : null, now);
+      captureRecFrame(now);
     } catch (err) {
       console.error("recording frame failed:", err); // never break counting
     }
@@ -251,7 +253,7 @@ function setPill(bodyVisible) {
 
 // ---------- session recording ----------
 // iOS Safari has no real screen capture, so the "screen recording" is
-// composited by hand: each camera frame + skeleton + a redrawn HUD goes onto
+// composited by hand: each camera frame + a redrawn HUD goes onto
 // a canvas, and MediaRecorder encodes that canvas. System notifications are
 // outside the browser and can never end up in the file.
 
@@ -334,10 +336,10 @@ async function startRecording(mode) {
 }
 
 // called from the pose loop once per camera frame while live
-function captureRecFrame(lm, now) {
+function captureRecFrame(now) {
   if (rec.mode === "lapse") {
     if (rec.frameN++ % rec.factor !== 0) return;
-    drawRecFrame(lm, now);
+    drawRecFrame(now);
     const frame = new VideoFrame(rec.canvas, {
       timestamp: rec.outN * FRAME_US,
       duration: FRAME_US,
@@ -346,7 +348,7 @@ function captureRecFrame(lm, now) {
     frame.close();
     rec.outN++;
   } else {
-    drawRecFrame(lm, now);
+    drawRecFrame(now);
   }
 }
 
@@ -396,7 +398,7 @@ function discardRecording() {
   Object.assign(rec, { blob: null, url: null, chunks: [], encoder: null, muxer: null, saved: false });
 }
 
-function drawRecFrame(lm, now) {
+function drawRecFrame(now) {
   const { ctx, canvas } = rec;
   const w = canvas.width, h = canvas.height;
   const mirror = settings.facing === "user";
@@ -404,7 +406,6 @@ function drawRecFrame(lm, now) {
   ctx.save();
   if (mirror) { ctx.translate(w, 0); ctx.scale(-1, 1); }
   ctx.drawImage(els.cam, 0, 0, w, h);
-  if (lm) strokeBones(ctx, lm, (p) => [p.x * w, p.y * h], Math.max(3, w / 240));
   ctx.restore();
 
   // HUD: giant count + a stats line, same info as the live screen
