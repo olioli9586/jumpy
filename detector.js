@@ -29,6 +29,7 @@ export class JumpDetector {
     this.recent = [];      // timestamps of the last few counted jumps
     this.relaxStreak = 0;  // consecutive rhythm-mode counts
     this.pending = [];     // candidates held until enough of them confirm a run
+    this.armVetoAt = 0;    // real-looking landing rejected only for high hands (rope wind-up)
     this.armUpStreak = 0;  // consecutive frames with a wrist near/above shoulder level
     this.riseArmUp = false;
     this.riseWristTravel = 0;
@@ -235,6 +236,14 @@ export class JumpDetector {
             if (soft >= 2) { counted = true; mode = "rhythm"; }
           }
         }
+        // Winding the rope up for the first jump holds the wrists above the
+        // shoulders through that jump's rise, so the arms gate vetoes it even
+        // though every body gate passes. Remember such a candidate; if a real
+        // run confirms right after, credit this one jump retroactively. Pure
+        // waving never confirms a run, so it still counts nothing.
+        if (!counted && Object.entries(gates).every(([k, v]) => v || k === "arms" || k === "armSwing")) {
+          this.armVetoAt = tMs;
+        }
         // Run confirmation: real jumping is continuous (the next jump lands
         // within ~2 s), while MediaPipe's whole-skeleton glitches — hands at
         // the waist or a rope swung overhead shift EVERY landmark up
@@ -258,6 +267,11 @@ export class JumpDetector {
             if (this.pending.length && tMs - this.pending.at(-1) > 2000) this.pending = [];
             this.pending.push(tMs);
             if (this.pending.length >= 3) {
+              if (this.armVetoAt > 0 && this.pending[0] - this.armVetoAt > 0 &&
+                  this.pending[0] - this.armVetoAt <= 2000) {
+                emit(this.armVetoAt);
+              }
+              this.armVetoAt = 0;
               for (const t of this.pending) emit(t);
               this.pending = [];
             } else {
