@@ -76,6 +76,25 @@ test("reset() forgets held candidates and the running rhythm", () => {
   assert.equal(run(d, (t) => pose({ lift: one(t) }), 3000).length, 0);
 });
 
+// A landmark glitch right after a landing can fake a second full up-down
+// cycle ~150 ms later. The refractory gate rejected that mid-run, but the
+// first jumps of a run are held for confirmation and used to skip the check,
+// so the phantom got credited too.
+test("refractory period also applies to held run-start candidates", () => {
+  for (const blipStart of [1270, 3270]) { // during run confirmation / mid-run
+    const h = hops({ n: 8, period: 500, height: 0.05 });
+    const blip = (t) =>
+      t >= blipStart && t < blipStart + 100
+        ? 0.05 * Math.sin((Math.PI * (t - blipStart)) / 100)
+        : 0;
+    const counted = run(new JumpDetector(), (t) => pose({ lift: h(t) + blip(t) }), 8000, 60);
+    assert.equal(counted.length, 8, `blip at ${blipStart}`);
+    for (let i = 1; i < counted.length; i++) {
+      assert.ok(counted[i] - counted[i - 1] > 180, `jumps ${i - 1},${i} too close`);
+    }
+  }
+});
+
 test("frames without a measurable torso are ignored", () => {
   const d = new JumpDetector();
   const flat = pose();
