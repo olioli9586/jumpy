@@ -299,6 +299,11 @@ async function startRecording(mode) {
       rec.encoder.configure({ codec, width: vw, height: vh, bitrate: 8_000_000, framerate: OUT_FPS });
     } catch (err) {
       console.warn("timelapse unavailable, falling back to normal speed:", err);
+      // drop a half-set-up encoder, or stopRecording would try to finish it
+      // instead of the MediaRecorder and the video would be lost
+      try { rec.encoder?.close(); } catch {}
+      rec.encoder = null;
+      rec.muxer = null;
       rec.mode = "real";
     }
   }
