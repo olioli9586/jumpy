@@ -16,7 +16,7 @@ All processing happens **on-device in the browser** (MediaPipe Pose over WASM/GP
 - **Rhythm strip** — a live tick trace of your last 10 seconds; even spacing = clean rhythm
 - **Session summary + history** with personal-best detection (stored locally)
 - **Stats screen** — day streak, last-7-days jump chart, week-over-week comparison, all-time totals
-- **Optional session recording** — a per-session toggle (off / 10× / 25× / 50× timelapse) composites the camera + skeleton + live HUD into a video. Normal speed uses MediaRecorder over a canvas; timelapse uses WebCodecs (VideoEncoder + [mp4-muxer](https://github.com/Vanilagy/mp4-muxer)) keeping 1 of every 5 frames with re-timestamped output, falling back to normal speed if unsupported. System notifications can never appear since it's not a true screen capture. After the session: save to Photos via the share sheet, or delete. Silent (no mic audio).
+- **Optional session recording** — a per-session toggle (off / 10× / 25× / 50× timelapse) composites the camera + skeleton + live HUD into a video. Normal speed uses MediaRecorder over a canvas; timelapse uses WebCodecs (VideoEncoder + [mp4-muxer](https://github.com/Vanilagy/mp4-muxer)) keeping 1 of every N camera frames (N = the speed-up) with re-timestamped output, falling back to normal speed if unsupported. System notifications can never appear since it's not a true screen capture. After the session: save to Photos via the share sheet, or delete. Silent (no mic audio).
 - **Share card** — a Strava-style 1080×1920 stats image (jumps, time, calories, pace, streak) generated on-device and shared via the share sheet.
 - 10-second countdown after GO, screen wake lock, front/rear camera flip
 - Installable: on iPhone, Share → **Add to Home Screen** for a full-screen app
@@ -51,6 +51,14 @@ npx serve .       # http://localhost:3000 — localhost is allowed camera access
 npx vite --host   # then use a tool like `npx local-ssl-proxy` — honestly, just deploy instead
 ```
 
+## Tests
+
+```sh
+npm test          # Node's built-in test runner, no dependencies to install
+```
+
+The detector tests drive `JumpDetector` with synthetic pose streams (`test/poses.js`); for real footage use `debug.html?v=<clip>.mp4`.
+
 ## Using it (tell your friend)
 
 1. Open the URL on the iPhone, allow camera access
@@ -65,7 +73,10 @@ npx vite --host   # then use a tool like `npx local-ssl-proxy` — honestly, jus
 |---|---|
 | `index.html` | markup for all screens (start / ready / live HUD / summary / settings) |
 | `style.css` | dark athletic UI, safe-area aware, landscape support |
-| `app.js` | camera, pose loop, jump detector, metrics, audio, storage |
+| `app.js` | camera, pose loop, UI, audio, recording, storage |
+| `detector.js` | the jump detector (shared with the `debug.html` offline harness) |
+| `metrics.js` | pure session/stats math: pace, calories, streaks, formatting |
+| `test/` | unit tests for the detector and metrics (`npm test`) |
 | `manifest.json`, `icon.svg` | home-screen install support |
 
 ## Credits / references

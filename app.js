@@ -12,6 +12,10 @@ import {
   JumpDetector,
   L_SHOULDER, R_SHOULDER, L_HIP, R_HIP,
 } from "./detector.js";
+import {
+  currentPace, metForPace, nextStreak, fmtTime, fmtDuration,
+  dayKey, dayStreak, weekTotals, readJSON, writeJSON,
+} from "./metrics.js";
 
 const MEDIAPIPE_WASM =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
@@ -39,10 +43,10 @@ const els = {
 
 const settings = Object.assign(
   { weightKg: 70, sound: true, facing: "user", sensitivity: "normal" },
-  JSON.parse(localStorage.getItem("jumpy.settings") || "{}")
+  readJSON("jumpy.settings", {})
 );
 function saveSettings() {
-  localStorage.setItem("jumpy.settings", JSON.stringify(settings));
+  writeJSON("jumpy.settings", settings);
 }
 
 // ---------- session ----------
@@ -58,25 +62,6 @@ const session = {
   curStreak: 0,
   lastKcalTick: 0,
 };
-
-function currentPace(now) {
-  // jumps in the last 10s, scaled to per-minute
-  const cutoff = now - 10_000;
-  let n = 0;
-  for (let i = session.jumpTimes.length - 1; i >= 0; i--) {
-    if (session.jumpTimes[i] < cutoff) break;
-    n++;
-  }
-  return n * 6;
-}
-
-function metForPace(pace) {
-  // Compendium of Physical Activities: skipping rope
-  if (pace <= 0) return 0;
-  if (pace < 100) return 8.8;
-  if (pace <= 120) return 11.8;
-  return 12.3;
-}
 
 // ---------- audio ----------
 
@@ -314,6 +299,11 @@ async function startRecording(mode) {
       rec.encoder.configure({ codec, width: vw, height: vh, bitrate: 8_000_000, framerate: OUT_FPS });
     } catch (err) {
       console.warn("timelapse unavailable, falling back to normal speed:", err);
+      // drop a half-set-up encoder, or stopRecording would try to finish it
+      // instead of the MediaRecorder and the video would be lost
+      try { rec.encoder?.close(); } catch {}
+      rec.encoder = null;
+      rec.muxer = null;
       rec.mode = "real";
     }
   }
@@ -417,7 +407,7 @@ function drawRecFrame(now) {
   ctx.fillText(String(session.jumps), w / 2, h * 0.26);
   ctx.font = `600 ${Math.round(h * 0.032)}px "Space Grotesk", "PingFang TC", sans-serif`;
   ctx.fillText(
-    `${fmtTime(now - session.startedAt)}  ·  ${currentPace(now)} 跳/分  ·  ${session.kcal.toFixed(1)} 大卡`,
+    `${fmtTime(now - session.startedAt)}  ·  ${currentPace(session.jumpTimes, now)} 跳/分  ·  ${session.kcal.toFixed(1)} 大卡`,
     w / 2,
     h * 0.95
   );
@@ -477,10 +467,8 @@ async function shareStatCard() {
   x.fillText("下", W / 2, H * 0.6);
 
   // stat grid, 2×2
-  const mins = Math.floor(lastStats.elapsedMs / 60000);
-  const secs = Math.round((lastStats.elapsedMs % 60000) / 1000);
   const cells = [
-    ["時間", mins > 0 ? `${mins}分 ${secs}秒` : `${secs}秒`],
+    ["時間", fmtDuration(lastStats.elapsedMs)],
     ["消耗", `${lastStats.kcal < 10 ? lastStats.kcal.toFixed(1) : Math.round(lastStats.kcal)} 大卡`],
     ["平均速度", `${lastStats.avg} 跳/分`],
     ["最佳連跳", `${lastStats.streak} 下`],
@@ -574,15 +562,10 @@ function show(screen) {
   state = screen;
 }
 
-function fmtTime(ms) {
-  const s = Math.floor(ms / 1000);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-}
-
 detector.onJump = (t) => {
   session.jumps++;
+  session.curStreak = nextStreak(session.curStreak, session.jumpTimes.at(-1), t);
   session.jumpTimes.push(t);
-  session.curStreak++;
   session.bestStreak = Math.max(session.bestStreak, session.curStreak);
   els.count.textContent = session.jumps;
   els.count.classList.remove("stamp");
@@ -599,18 +582,15 @@ function startHudLoop() {
     const now = performance.now();
     els.hudTime.textContent = fmtTime(now - session.startedAt);
 
-    const pace = currentPace(now);
+    const pace = currentPace(session.jumpTimes, now);
     session.peakPace = Math.max(session.peakPace, pace);
     els.mPace.textContent = pace;
     els.mStreak.textContent = session.bestStreak;
 
-    // a gap of >2.5s breaks the streak
-    const lastJump = session.jumpTimes.at(-1) ?? 0;
-    if (now - lastJump > 2500) session.curStreak = 0;
-
     // calories accrue only while actually jumping (a jump in the last 3s)
     const dtH = (now - session.lastKcalTick) / 3_600_000;
     session.lastKcalTick = now;
+    const lastJump = session.jumpTimes.at(-1) ?? 0;
     if (now - lastJump < 3000 && pace > 0) {
       session.kcal += metForPace(pace) * settings.weightKg * dtH;
     }
@@ -763,12 +743,11 @@ function renderHistory(rows) {
 
 // ---------- stats ----------
 
-const dayKey = (d) => d.toLocaleDateString("en-CA"); // local YYYY-MM-DD
-
-const loadSessions = () =>
-  JSON.parse(localStorage.getItem("jumpy.sessions") || "[]");
-const saveSessions = (s) =>
-  localStorage.setItem("jumpy.sessions", JSON.stringify(s));
+const loadSessions = () => {
+  const s = readJSON("jumpy.sessions", []);
+  return Array.isArray(s) ? s : [];
+};
+const saveSessions = (s) => writeJSON("jumpy.sessions", s);
 
 function renderStats() {
   const sessions = loadSessions();
@@ -778,15 +757,7 @@ function renderStats() {
     return;
   }
 
-  // day streak — consecutive training days; today not counted against you yet
-  const trained = new Set(sessions.map((s) => dayKey(new Date(s.date))));
-  let streak = 0;
-  const cursor = new Date();
-  if (!trained.has(dayKey(cursor))) cursor.setDate(cursor.getDate() - 1);
-  while (trained.has(dayKey(cursor))) {
-    streak++;
-    cursor.setDate(cursor.getDate() - 1);
-  }
+  const streak = dayStreak(sessions);
 
   // per-day jump totals, last 7 days
   const byDay = {};
@@ -807,18 +778,7 @@ function renderStats() {
   const maxDay = Math.max(1, ...days.map((d) => d.total));
 
   // rolling week vs the week before
-  const now = Date.now();
-  const WEEK = 7 * 86_400_000;
-  const thisWk = { jumps: 0, sec: 0, kcal: 0 };
-  const lastWk = { jumps: 0, sec: 0, kcal: 0 };
-  for (const s of sessions) {
-    const age = now - new Date(s.date).getTime();
-    const bucket = age < WEEK ? thisWk : age < 2 * WEEK ? lastWk : null;
-    if (!bucket) continue;
-    bucket.jumps += s.jumps;
-    bucket.sec += s.seconds;
-    bucket.kcal += s.kcal;
-  }
+  const { thisWk, lastWk } = weekTotals(sessions);
   let deltaHtml = "";
   if (lastWk.jumps > 0) {
     const pct = Math.round(((thisWk.jumps - lastWk.jumps) / lastWk.jumps) * 100);

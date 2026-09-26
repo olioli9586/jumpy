@@ -1,0 +1,13 @@
+{
+  "name": "jumpy",
+  "private": true,
+  "type": "module",
+  "description": "Static site, no build step. package.json exists only for the unit tests.",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check app.js && node --check detector.js && node --check metrics.js && node --check debug.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

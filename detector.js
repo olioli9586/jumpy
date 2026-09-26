@@ -206,7 +206,8 @@ export class JumpDetector {
           knee: !this.kneeSeen || kneeRise > rise * 0.25,
           ankle: !this.ankSeen || ankRise > rise * 0.2,
           riseTime: tMs - this.riseAt < 700,
-          refractory: tMs - this.lastJumpAt > 180,
+          // held candidates count too — they may still be credited later
+          refractory: tMs - Math.max(this.lastJumpAt, this.pending.at(-1) ?? 0) > 180,
           arms: !this.riseArmUp,
           armSwing: this.riseWristTravel < 0.5,
         };
