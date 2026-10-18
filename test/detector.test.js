@@ -102,3 +102,20 @@ test("frames without a measurable torso are ignored", () => {
   assert.doesNotThrow(() => d.update(flat, 0));
   assert.equal(d.ready, false);
 });
+
+// The first jump of a rope start is taken with the wrists still overhead
+// (winding the rope up), so the arms gate rejects it. It's credited back once
+// the jumps right after it confirm a run — but never when it stands alone.
+test("a wind-up first jump with hands overhead is credited when a run follows", () => {
+  const h = hops({ n: 6, period: 500, height: 0.05 });
+  const windUp = (t) => (t >= 900 && t < 1300 ? 0.2 : null); // through hop 1 only
+  const frame = (t) => pose({ lift: h(t), wristY: windUp(t) });
+  assert.equal(run(new JumpDetector(), frame, 6000).length, 6);
+});
+
+test("a hands-overhead jump more than 2 s before a run is not credited", () => {
+  const lone = hops({ n: 1, period: 500, height: 0.05 });
+  const later = hops({ n: 5, period: 500, height: 0.05, start: 4000 });
+  const frame = (t) => pose({ lift: lone(t) + later(t), wristY: t < 1300 ? 0.2 : null });
+  assert.equal(run(new JumpDetector(), frame, 8000).length, 5);
+});
