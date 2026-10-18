@@ -77,7 +77,7 @@ The detector tests drive `JumpDetector` with synthetic pose streams (`test/poses
 | `detector.js` | the jump detector (shared with the `debug.html` offline harness) |
 | `metrics.js` | pure session/stats math: pace, calories, streaks, formatting |
 | `test/` | unit tests for the detector and metrics (`npm test`) |
-| `manifest.json`, `icon.svg` | home-screen install support |
+| `manifest.json`, `icon.svg`, `apple-touch-icon.png` | home-screen install support (iOS needs the PNG — it ignores SVG touch icons) |
 
 ## Credits / references
 

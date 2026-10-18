@@ -70,6 +70,10 @@ function tick() {
   if (!settings.sound) return;
   try {
     audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    // iOS suspends ("interrupted") the context after calls, Siri or other
+    // audio and never resumes it itself; resuming needs a user gesture,
+    // and GO's tap calls this every session
+    if (audioCtx.state !== "running") audioCtx.resume().catch(() => {});
     const o = audioCtx.createOscillator();
     const g = audioCtx.createGain();
     o.frequency.value = 1200;
@@ -99,7 +103,7 @@ const detector = new JumpDetector(() => settings.sensitivity);
 
 async function startCamera() {
   stream?.getTracks().forEach((t) => t.stop());
-  stream = await navigator.mediaDevices.getUserMedia({
+  const next = await navigator.mediaDevices.getUserMedia({
     video: {
       facingMode: settings.facing,
       width: { ideal: 1280 },
@@ -108,6 +112,10 @@ async function startCamera() {
     },
     audio: false,
   });
+  // the stall watchdog can start another call while this one awaits
+  // getUserMedia — stop whichever stream won in the meantime, or it leaks
+  if (stream !== next) stream?.getTracks().forEach((t) => t.stop());
+  stream = next;
   els.cam.srcObject = stream;
   await els.cam.play();
   const mirror = settings.facing === "user";
@@ -117,11 +125,20 @@ async function startCamera() {
 
 async function loadLandmarker() {
   const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM);
-  landmarker = await PoseLandmarker.createFromOptions(vision, {
-    baseOptions: { modelAssetPath: POSE_MODEL, delegate: "GPU" },
-    runningMode: "VIDEO",
-    numPoses: 1,
-  });
+  const create = (delegate) =>
+    PoseLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: POSE_MODEL, delegate },
+      runningMode: "VIDEO",
+      numPoses: 1,
+    });
+  try {
+    landmarker = await create("GPU");
+  } catch (err) {
+    // no usable WebGL (old device, low-power mode, GPU process crashed):
+    // slower, but counting on the CPU beats not starting at all
+    console.warn("GPU pose delegate failed, using CPU:", err);
+    landmarker = await create("CPU");
+  }
 }
 
 const BONES = [
@@ -188,6 +205,10 @@ function poseLoop() {
   }
   lastVideoTime = els.cam.currentTime;
   lastFrameAt = now;
+  // nothing on these screens uses the pose, and running the model nonstop
+  // heats the phone (sessions already throttle 55→32 fps when it's warm);
+  // the frame bookkeeping above still runs so the stall watchdog stays fed
+  if (state === "summary" || state === "stats") return;
   let result;
   try {
     result = landmarker.detectForVideo(els.cam, now);
@@ -255,6 +276,15 @@ const rec = {
 const recSupported = () =>
   "MediaRecorder" in window && !!HTMLCanvasElement.prototype.captureStream;
 
+// fetched as soon as a timelapse mode is picked, so the end of the countdown
+// doesn't stall on a CDN download (the session is already counting by then)
+let muxerModule = null;
+const loadMuxer = () =>
+  (muxerModule ||= import("https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/+esm").catch((err) => {
+    muxerModule = null; // let the next attempt retry
+    throw err;
+  }));
+
 const recActive = () =>
   rec.mr?.state === "recording" || rec.encoder?.state === "configured";
 
@@ -276,9 +306,7 @@ async function startRecording(mode) {
     // can only record wall-clock time
     try {
       if (!("VideoEncoder" in window)) throw new Error("WebCodecs unavailable");
-      const { Muxer, ArrayBufferTarget } = await import(
-        "https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/+esm"
-      );
+      const { Muxer, ArrayBufferTarget } = await loadMuxer();
       let codec = null;
       for (const c of ["avc1.640028", "avc1.4d0028", "avc1.42e01f"]) {
         if ((await VideoEncoder.isConfigSupported({ codec: c, width: vw, height: vh })).supported) {
@@ -315,7 +343,10 @@ async function startRecording(mode) {
     rec.chunks = [];
     rec.mr = new MediaRecorder(rec.canvas.captureStream(30), {
       ...(mime && { mimeType: mime }),
-      videoBitsPerSecond: 5_000_000,
+      // the whole file stays in memory until saved: 5 Mbps made an 11-minute
+      // session ~400 MB, enough for iOS to kill the tab; a fixed camera on a
+      // mostly static room still looks clean at half that
+      videoBitsPerSecond: 2_500_000,
     });
     rec.mr.ondataavailable = (e) => e.data.size && rec.chunks.push(e.data);
     rec.mr.start(1000);
@@ -416,10 +447,12 @@ function drawRecFrame(now) {
 
 // ---------- stat card (Strava-style share image) ----------
 
-let lastStats = null;
+let statCardPng = null; // Promise<Blob>, drawn when the summary opens
 
-async function shareStatCard() {
-  if (!lastStats) return;
+// Drawn ahead of the tap: iOS only lets navigator.share run close to the
+// user gesture, and encoding a 1080×1920 PNG first can use that window up
+// (the share then fails with NotAllowedError and falls back to a download).
+function renderStatCard(stats) {
   const W = 1080, H = 1920;
   const c = document.createElement("canvas");
   c.width = W;
@@ -449,7 +482,7 @@ async function shareStatCard() {
   x.fillStyle = "#8b95a6";
   x.font = `500 44px ${UI}`;
   x.fillText(
-    lastStats.date.toLocaleDateString("zh-TW", { year: "numeric", month: "long", day: "numeric" }),
+    stats.date.toLocaleDateString("zh-TW", { year: "numeric", month: "long", day: "numeric" }),
     W - 84, 160
   );
 
@@ -459,19 +492,19 @@ async function shareStatCard() {
   x.font = `500 52px ${UI}`;
   x.fillText("跳繩次數", W / 2, H * 0.32);
   x.fillStyle = "#f2f5f9";
-  const digits = String(lastStats.jumps).length;
+  const digits = String(stats.jumps).length;
   x.font = `${digits <= 3 ? 430 : digits === 4 ? 330 : 260}px Anton, sans-serif`;
-  x.fillText(String(lastStats.jumps), W / 2, H * 0.55);
+  x.fillText(String(stats.jumps), W / 2, H * 0.55);
   x.fillStyle = "#ff5a1f";
   x.font = `700 56px ${UI}`;
   x.fillText("下", W / 2, H * 0.6);
 
   // stat grid, 2×2
   const cells = [
-    ["時間", fmtDuration(lastStats.elapsedMs)],
-    ["消耗", `${lastStats.kcal < 10 ? lastStats.kcal.toFixed(1) : Math.round(lastStats.kcal)} 大卡`],
-    ["平均速度", `${lastStats.avg} 跳/分`],
-    ["最佳連跳", `${lastStats.streak} 下`],
+    ["時間", fmtDuration(stats.elapsedMs)],
+    ["消耗", `${stats.kcal < 10 ? stats.kcal.toFixed(1) : Math.round(stats.kcal)} 大卡`],
+    ["平均速度", `${stats.avg} 跳/分`],
+    ["最佳連跳", `${stats.streak} 下`],
   ];
   const gy = H * 0.66, rowH = 210, colW = (W - 168) / 2;
   cells.forEach(([label, value], i) => {
@@ -490,7 +523,12 @@ async function shareStatCard() {
   x.font = `500 38px ${UI}`;
   x.fillText("jumpy-swart.vercel.app", W / 2, H - 84);
 
-  const blob = await new Promise((r) => c.toBlob(r, "image/png"));
+  return new Promise((r) => c.toBlob(r, "image/png"));
+}
+
+async function shareStatCard() {
+  const blob = await statCardPng; // already resolved by the time anyone taps
+  if (!blob) return;
   const file = new File([blob], "jumpy-stats.png", { type: "image/png" });
   if (navigator.canShare?.({ files: [file] })) {
     try {
@@ -504,6 +542,7 @@ async function shareStatCard() {
   a.href = URL.createObjectURL(blob);
   a.download = file.name;
   a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
 }
 
 async function saveRecording() {
@@ -532,9 +571,12 @@ async function saveRecording() {
 
 function drawRhythm(now) {
   const c = els.rhythm;
-  if (c.width !== c.clientWidth * devicePixelRatio) {
-    c.width = c.clientWidth * devicePixelRatio;
-    c.height = c.clientHeight * devicePixelRatio;
+  // canvas sizes are integers: compare rounded, or a fractional DPR
+  // reallocates the canvas on every redraw
+  const cw = Math.round(c.clientWidth * devicePixelRatio);
+  if (c.width !== cw) {
+    c.width = cw;
+    c.height = Math.round(c.clientHeight * devicePixelRatio);
   }
   const ctx = c.getContext("2d");
   ctx.clearRect(0, 0, c.width, c.height);
@@ -624,6 +666,9 @@ async function enableCamera() {
       poseLoop();
     }
   } catch (err) {
+    // the tracker loads after the ready screen is up — come back to where
+    // the error message (and a retry button) actually is
+    show("start");
     els.startError.textContent =
       err.name === "NotAllowedError"
         ? "相機權限遭拒。請到「設定 → Safari」允許相機存取後重新載入。"
@@ -673,6 +718,9 @@ async function beginSession() {
 async function endSession() {
   if (!session.active) return; // double-tap on 結束
   session.active = false;
+  // before awaiting the recording: finalizing it can take seconds, which
+  // would otherwise inflate the session time and deflate the average pace
+  const elapsed = performance.now() - session.startedAt;
   clearInterval(hudTimer);
   hudTimer = null;
   wakeLock?.release().catch(() => {});
@@ -687,11 +735,10 @@ async function endSession() {
     $("rec-review").classList.remove("hidden");
   }
 
-  const elapsed = performance.now() - session.startedAt;
   const minutes = elapsed / 60_000;
   const avg = minutes > 0.05 ? Math.round(session.jumps / minutes) : 0;
 
-  lastStats = {
+  const stats = {
     jumps: session.jumps,
     elapsedMs: elapsed,
     kcal: session.kcal,
@@ -700,6 +747,7 @@ async function endSession() {
     streak: session.bestStreak,
     date: new Date(),
   };
+  statCardPng = session.jumps > 0 ? renderStatCard(stats) : null;
   $("btn-card").classList.toggle("hidden", session.jumps === 0);
 
   const past = loadSessions();
@@ -719,7 +767,7 @@ async function endSession() {
       seconds: Math.round(elapsed / 1000),
       kcal: +session.kcal.toFixed(1),
     });
-    saveSessions(past.slice(0, 100));
+    saveSessions(past.slice(0, MAX_SESSIONS));
     announce(`完成，${session.jumps} 下`);
   }
   renderHistory(past.slice(0, 5));
@@ -742,6 +790,10 @@ function renderHistory(rows) {
 }
 
 // ---------- stats ----------
+
+// All-time totals and the day streak are computed from this list, so it must
+// hold far more than a few months of daily sessions (~80 bytes each).
+const MAX_SESSIONS = 2000;
 
 const loadSessions = () => {
   const s = readJSON("jumpy.sessions", []);
@@ -924,6 +976,7 @@ const REC_LABELS = { off: "錄影：關", real: "錄影：一般速度", lapse10
 if (!recSupported()) btnRec.classList.add("hidden");
 btnRec.addEventListener("click", () => {
   recMode = REC_ORDER[(REC_ORDER.indexOf(recMode) + 1) % REC_ORDER.length];
+  if (recMode.startsWith("lapse") && "VideoEncoder" in window) loadMuxer().catch(() => {});
   btnRec.classList.toggle("on", recMode !== "off");
   btnRec.setAttribute("aria-pressed", String(recMode !== "off"));
   btnRec.querySelector(".rec-label").textContent = REC_LABELS[recMode];
